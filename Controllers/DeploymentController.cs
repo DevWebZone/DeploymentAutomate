@@ -29,6 +29,47 @@ namespace DeploymentAutomate.Controllers
     {
       _config = config;
     }
+    // Upload input files (code or script files) on the server 
+     [HttpPost("upload-files")]
+    public async Task<ActionResult<string>> UploadCodeFiles()
+    {
+      var formCollection = await Request.ReadFormAsync();
+      var file = formCollection.Files.First();
+      string currentDir = System.IO.Directory.GetCurrentDirectory();
+      var requestType = formCollection["RequestType"]; // RequestType can be either codefiles or scriptfiles
+      string folderPath = Path.Combine(currentDir, "wwwroot");
+      string fileExt = System.IO.Path.GetExtension(ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.Trim('"'));
+      if (!ValidateAllowedFileExt(fileExt, requestType)) // .txt for scriptfiles and .zip for codefiles
+        return BadRequest("Invalid File Type Provided");
+      if(file.Length > 0)
+      {
+        string fileName = requestType + fileExt;
+        var fullPath = Path.Combine(folderPath, requestType);
+        using( var stream = new FileStream(Path.Combine(folderPath, fileName), FileMode.Create))
+        {
+          await file.CopyToAsync(stream);
+        }
+        if(Directory.Exists(fullPath))
+        {
+          Directory.Delete(fullPath, true); 
+        }
+        if(requestType.Contains("codefiles"))
+            ZipFile.ExtractToDirectory(Path.Combine(folderPath, fileName), fullPath, true);
+        else
+        {
+            Directory.CreateDirectory(fullPath);
+            System.IO.File.Copy(Path.Combine(folderPath, fileName), Path.Combine(fullPath, fileName), true);
+        }
+            
+        return Ok("files Uploaded Successfully");
+      }
+      else
+      {
+        return BadRequest("File could not be uploaded");
+      }
+    }
+   
+    // execute scripts on Db from uploaded script files
     [HttpPost("execute-script")]
     public async Task<ActionResult<IEnumerable<string>>> ExecuteScript([FromBody] ExecuteScriptDTO requestBody)
     {
@@ -38,10 +79,10 @@ namespace DeploymentAutomate.Controllers
         string currentDir = System.IO.Directory.GetCurrentDirectory();
         string inputPath = Path.Combine(currentDir, "wwwroot", "scriptfiles");
         string[] filePath = Directory.GetFiles(inputPath);
-        string[] DBNames = requestBody.DBNames;
+        string[] DBNames = requestBody.DBNames; // DB Name list on which script can be executed
         foreach (string DBName in DBNames)
         {
-          string connectionString = _config.GetConnectionString(DBName);
+          string connectionString = _config.GetConnectionString(DBName); // corresponding connectionstring for DB
           string sqlquery = string.Empty;
           using(SqlConnection con = new SqlConnection(connectionString))
           {
@@ -81,38 +122,7 @@ namespace DeploymentAutomate.Controllers
         return BadRequest(result.ToArray());
       }
     }
-    [HttpPost("upload-files")]
-    public async Task<ActionResult<string>> UploadCodeFiles()
-    {
-      var formCollection = await Request.ReadFormAsync();
-      var file = formCollection.Files.First();
-      string currentDir = System.IO.Directory.GetCurrentDirectory();
-      var requestType = formCollection["RequestType"];
-      string folderPath = Path.Combine(currentDir, "wwwroot");
-      string fileExt = System.IO.Path.GetExtension(ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.Trim('"'));
-      if (ValidateAllowedFileExt(fileExt, requestType))
-        return BadRequest("Invalid File Type Provided");
-      if(file.Length > 0)
-      {
-        string fileName = requestType + fileExt;
-        var fullPath = Path.Combine(folderPath, requestType);
-        using( var stream = new FileStream(Path.Combine(folderPath, fileName), FileMode.Create))
-        {
-          await file.CopyToAsync(stream);
-        }
-        if(Directory.Exists(fullPath))
-        {
-          Directory.Delete(fullPath, true); 
-        }
-        ZipFile.ExtractToDirectory(Path.Combine(folderPath, fileName), fullPath, true);
-
-        return Ok("files Uploaded Successfully");
-      }
-      else
-      {
-        return BadRequest("File could not be uploaded");
-      }
-    }
+    // replace code files with uploaded files and start and stop application while maintaining User access rights for the code files
     [HttpPost("update-codefiles")]
     public ActionResult<string> UpdateCode([FromBody] UpdateCodeDTO requestBody)
     {
@@ -123,19 +133,19 @@ namespace DeploymentAutomate.Controllers
         string inputPath = Path.Combine(currentDir, "wwwroot", "codefiles");
         string[] inputdirs = Directory.GetDirectories(inputPath, "*", SearchOption.AllDirectories);
         DirectoryInfo inputDir= new DirectoryInfo(inputPath);
-        string[] instances = requestBody.Instances;
+        string[] instances = requestBody.Instances; // application instances for which code needs to be updated
         FileInfo[] inputFiles = inputDir.GetFiles("*", SearchOption.AllDirectories);
         foreach(string instance in instances)
         {
           string basePath = _config["Instances:" + instance + ":basePath"];
-          string basetempPath = Path.Combine(basePath, "temp");
+          string basetempPath = Path.Combine(basePath, "temp"); // temp location to store old files as a backup
           string tempdir = string.Empty;
           string tempPath = string.Empty;
           if(Directory.Exists(basetempPath))
           {
             Directory.Delete(basetempPath, true);
           }
-          bool isAppStopped = StopIISWebsite(instance);
+          bool isAppStopped = StopIISWebsite(instance); // stopping app before replacing files
           Thread.Sleep(4000);
           if(isAppStopped)
           {
@@ -145,6 +155,7 @@ namespace DeploymentAutomate.Controllers
               {
                 foreach(FileInfo file in inputFiles)
                 {
+                  // Copy old files to temp location and replace with new files uploaded by user
                   tempdir = file.Directory.FullName.Replace(inputPath + "\\", "/");
                   tempPath = Path.Combine(basetempPath, tempdir);
                   if(!Directory.Exists(tempPath))
@@ -163,19 +174,20 @@ namespace DeploymentAutomate.Controllers
                     System.IO.File.Delete(filePath);
                   }
                   System.IO.File.Copy(file.FullName, filePath, true);
-                  SetGroupUsersPermission(filePath, "IIS_Users");
+                  SetGroupUsersPermission(filePath, "IIS_Users"); // setting permissions for the file to be accessible from IISUsers
 
                 }
               }
               catch (Exception ex)
               {
-                RevertChanges(Path.Combine(basePath, "temp"), Path.Combine(basePath, tempdir));
+                RevertChanges(Path.Combine(basePath, "temp"), Path.Combine(basePath, tempdir)); // in case of any error, replace back the old files from temp folder
               }
 
               Thread.Sleep(4000);
-              bool StartApp = StartIISWebsite(instance);
+              bool StartApp = StartIISWebsite(instance); // start application again
               try
               {
+                // create abackup for older files
                 string backupPath = Path.Combine(basePath, "Backup");
                 if (!Directory.Exists(backupPath))
                 {
@@ -210,6 +222,8 @@ namespace DeploymentAutomate.Controllers
 
     }
     private static ServerManager server = new ServerManager();
+
+    // helper function to stop IIS hosted application
     private static bool StopIISWebsite(string instance)
     {
       var site = server.Sites.FirstOrDefault(x => x.Name == instance);
@@ -241,6 +255,7 @@ namespace DeploymentAutomate.Controllers
       }
       return true;
     }
+    // helper function to stop IIS hosted application
     private static bool StartIISWebsite(string instance)
     {
       var site = server.Sites.FirstOrDefault(x => x.Name == instance);
@@ -264,7 +279,7 @@ namespace DeploymentAutomate.Controllers
         return false;
       }
     }
-
+    // helper function to Revert replaced files back to original files
     private static void RevertChanges(string tempDir, string fileDir)
     {
       try
@@ -290,7 +305,7 @@ namespace DeploymentAutomate.Controllers
       
 
     }
-
+    // helper function to set access for a user group to maintain accessiblity of files
     private static void SetGroupUsersPermission(string filePath, string groupName)
     {
 
@@ -309,7 +324,7 @@ namespace DeploymentAutomate.Controllers
           strUsers = "BUILTIN\\IIS_IUSRS";
         }
         var fsAccessRule = new FileSystemAccessRule(strUsers, FileSystemRights.Write, AccessControlType.Allow);
-        dirSec.ModifyAccessRule(AccessControlModification.Add, fsAccessRule, out bool modified);
+                dirSec.ModifyAccessRule(AccessControlModification.Add, fsAccessRule, out bool modified);
         dirInfo.SetAccessControl(dirSec);
         return;
       }
@@ -319,6 +334,7 @@ namespace DeploymentAutomate.Controllers
       }
     }
 
+    // validates file format
     private static bool ValidateAllowedFileExt(string fileExt, string RequestType)
     {
       string allowedFileExts = string.Empty;
