@@ -1,7 +1,8 @@
-#DeploymentAutmate APIs
+# DeploymentAutmate APIs
+
 .Net Core Web Application to automate the deployment process for updating code and executing databases changes for Web Application hosted on IIS Server
 
-##How It Works
+## How It Works
 
 -> Upload the latest code files that needs to be updated for the application in a zip folder  Or for Executing script upload the script in a text file using "/upload-files" endpoint
 
