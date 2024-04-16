@@ -1,4 +1,4 @@
-# DeploymentAutmate APIs
+# DeploymentAutomate APIs
 
 .Net Core Web Application to automate the deployment process for updating code and executing databases changes for Web Application hosted on IIS Server
 
